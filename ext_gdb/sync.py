@@ -955,9 +955,9 @@ class Cc(WrappedCommand):
         # Finally, delete breakpoint that we hit
         # XXX - we should actually log if the breakpoint we set earlier is the one we hit
         #       otherwise we remove the breakpoint anyway :/
-        regexp_list = re.findall("Thread \d hit Breakpoint \d+, (0x[0-9a-f]+) in", res)
+        regexp_list = re.findall(r"Thread \d hit Breakpoint \d+, (0x[0-9a-f]+) in", res)
         if not regexp_list:
-            regexp_list = re.findall("Breakpoint \d+, (0x[0-9a-f]+) in", res)
+            regexp_list = re.findall(r"Breakpoint \d+, (0x[0-9a-f]+) in", res)
         if regexp_list:
             reached_addr = int(regexp_list[0], 16)
             if reached_addr == ida_cursor:
