@@ -70,6 +70,11 @@ typedef struct
 
 typedef struct
 {
+    void* reserved;
+} PLUG_CB_STOPPINGDEBUG;
+
+typedef struct
+{
     CREATE_PROCESS_DEBUG_INFO* CreateProcessInfo;
     IMAGEHLP_MODULE64* modInfo;
     const char* DebugFileName;
@@ -231,6 +236,40 @@ typedef struct
     GUIMENUTYPE hMenu;
 } PLUG_CB_MENUPREPARE;
 
+typedef struct
+{
+    const char* traceFilePath;
+} PLUG_CB_STARTTRACE;
+
+typedef struct
+{
+    void* reserved;
+} PLUG_CB_STOPTRACE;
+
+typedef enum
+{
+    ValueTypeNumber,
+    ValueTypeString,
+    // Types below cannot be used for values, only for registration
+    ValueTypeAny,
+    ValueTypeOptionalNumber,
+    ValueTypeOptionalString,
+    ValueTypeOptionalAny,
+} ValueType;
+
+typedef struct
+{
+    const char* ptr; // Should be allocated with BridgeAlloc
+    bool isOwner; // When set to true BridgeFree will be called on ptr
+} StringValue;
+
+typedef struct
+{
+    ValueType type;
+    duint number;
+    StringValue string;
+} ExpressionValue;
+
 //enums
 typedef enum
 {
@@ -265,6 +304,9 @@ typedef enum
     CB_VALFROMSTRING, //PLUG_CB_VALFROMSTRING
     CB_VALTOSTRING, //PLUG_CB_VALTOSTRING
     CB_MENUPREPARE, //PLUG_CB_MENUPREPARE
+    CB_STOPPINGDEBUG, //PLUG_CB_STOPDEBUG
+    CB_STARTTRACE, //PLUG_CB_STARTTRACE
+    CB_STOPTRACE, //PLUG_CB_STOPTRACE
     CB_LAST
 } CBTYPE;
 
@@ -280,7 +322,8 @@ typedef enum
 typedef void (*CBPLUGIN)(CBTYPE cbType, void* callbackInfo);
 typedef bool (*CBPLUGINCOMMAND)(int argc, char** argv);
 typedef void (*CBPLUGINSCRIPT)();
-typedef duint(*CBPLUGINEXPRFUNCTION)(int argc, duint* argv, void* userdata);
+typedef duint(*CBPLUGINEXPRFUNCTION)(int argc, const duint* argv, void* userdata);
+typedef bool(*CBPLUGINEXPRFUNCTIONEX)(ExpressionValue* result, int argc, const ExpressionValue* argv, void* userdata);
 typedef FORMATRESULT(*CBPLUGINFORMATFUNCTION)(char* dest, size_t destCount, int argc, char* argv[], duint value, void* userdata);
 typedef bool (*CBPLUGINPREDICATE)(void* userdata);
 
@@ -295,6 +338,7 @@ PLUG_IMPEXP bool _plugin_unregistercallback(int pluginHandle, CBTYPE cbType);
 PLUG_IMPEXP bool _plugin_registercommand(int pluginHandle, const char* command, CBPLUGINCOMMAND cbCommand, bool debugonly);
 PLUG_IMPEXP bool _plugin_unregistercommand(int pluginHandle, const char* command);
 PLUG_IMPEXP void _plugin_logprintf(const char* format, ...);
+PLUG_IMPEXP void _plugin_lograw_html(const char* text);
 PLUG_IMPEXP void _plugin_logputs(const char* text);
 PLUG_IMPEXP void _plugin_logprint(const char* text);
 PLUG_IMPEXP void _plugin_debugpause();
@@ -316,12 +360,14 @@ PLUG_IMPEXP bool _plugin_menuentryremove(int pluginHandle, int hEntry);
 PLUG_IMPEXP void _plugin_startscript(CBPLUGINSCRIPT cbScript);
 PLUG_IMPEXP bool _plugin_waituntilpaused();
 PLUG_IMPEXP bool _plugin_registerexprfunction(int pluginHandle, const char* name, int argc, CBPLUGINEXPRFUNCTION cbFunction, void* userdata);
+PLUG_IMPEXP bool _plugin_registerexprfunctionex(int pluginHandle, const char* name, ValueType returnType, const ValueType* argTypes, size_t argCount, CBPLUGINEXPRFUNCTIONEX cbFunction, void* userdata);
 PLUG_IMPEXP bool _plugin_unregisterexprfunction(int pluginHandle, const char* name);
 PLUG_IMPEXP bool _plugin_unload(const char* pluginName);
 PLUG_IMPEXP bool _plugin_load(const char* pluginName);
 PLUG_IMPEXP duint _plugin_hash(const void* data, duint size);
 PLUG_IMPEXP bool _plugin_registerformatfunction(int pluginHandle, const char* type, CBPLUGINFORMATFUNCTION cbFunction, void* userdata);
 PLUG_IMPEXP bool _plugin_unregisterformatfunction(int pluginHandle, const char* type);
+PLUG_IMPEXP bool _plugin_testassert(bool condition, const char* format, ...);
 
 #ifdef __cplusplus
 }
