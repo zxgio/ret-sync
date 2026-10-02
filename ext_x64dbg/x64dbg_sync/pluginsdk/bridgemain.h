@@ -1,14 +1,15 @@
 #ifndef _BRIDGEMAIN_H_
 #define _BRIDGEMAIN_H_
 
-#include <windows.h>
+#include <Windows.h>
+#include <stdint.h>
 
 #ifndef __cplusplus
 #include <stdbool.h>
 #define DEFAULT_PARAM(name, value) name
 #else
 #define DEFAULT_PARAM(name, value) name = value
-#endif
+#endif // __cplusplus
 
 //default structure alignments forced
 #ifdef _WIN64
@@ -36,25 +37,39 @@ typedef signed long dsint;
 #ifdef __cplusplus
 extern "C"
 {
-#endif
+#endif // __cplusplus
 
 //Bridge defines
 #define MAX_SETTING_SIZE 65536
 #define DBG_VERSION 25
 
 //Bridge functions
+typedef struct _BRIDGE_CONFIG
+{
+    HINSTANCE hGuiModule;
+    const wchar_t* szUserDirectory;
+} BRIDGE_CONFIG;
 
 /// <summary>
 /// Initialize the bridge.
 /// </summary>
 /// <returns>On error it returns a non-null error message.</returns>
-BRIDGE_IMPEXP const wchar_t* BridgeInit();
+BRIDGE_IMPEXP const wchar_t* BridgeInit(BRIDGE_CONFIG* config);
+
+BRIDGE_IMPEXP HMODULE BridgeLoadLibraryCheckedW(const wchar_t* szDll, bool allowFailure);
+
+BRIDGE_IMPEXP HMODULE BridgeLoadLibraryCheckedA(const char* szDll, bool allowFailure);
 
 /// <summary>
 /// Start the bridge.
 /// </summary>
 /// <returns>On error it returns a non-null error message.</returns>
 BRIDGE_IMPEXP const wchar_t* BridgeStart();
+
+/// <summary>
+/// Returns true when running with the headless host.
+/// </summary>
+BRIDGE_IMPEXP bool BridgeIsHeadless();
 
 /// <summary>
 /// Allocate buffer. Use BridgeFree to free the buffer.
@@ -130,9 +145,31 @@ BRIDGE_IMPEXP int BridgeGetDbgVersion();
 /// <returns>true if the process is elevated, false otherwise.</returns>
 BRIDGE_IMPEXP bool BridgeIsProcessElevated();
 
+/// <summary>
+/// Gets the NT build number from the operating system.
+/// </summary>
+/// <returns>NtBuildNumber</returns>
+BRIDGE_IMPEXP unsigned int BridgeGetNtBuildNumber();
+
+/// <summary>
+/// Returns the original working directory when starting the debugger.
+/// The working directory is changed to the x64dbg directory after initialization.
+/// </summary>
+BRIDGE_IMPEXP const wchar_t* BridgeWorkingDirectory();
+
+/// <summary>
+/// Returns the user directory (without trailing backslash).
+/// </summary>
+BRIDGE_IMPEXP const wchar_t* BridgeUserDirectory();
+
+/// <summary>
+/// Returns true if x64dbg is running under ARM64 emulation.
+/// </summary>
+BRIDGE_IMPEXP bool BridgeIsARM64Emulated();
+
 #ifdef __cplusplus
 }
-#endif
+#endif // __cplusplus
 
 //list structure (and C++ wrapper)
 #include "bridgelist.h"
@@ -142,7 +179,7 @@ BRIDGE_IMPEXP bool BridgeIsProcessElevated();
 #ifdef __cplusplus
 extern "C"
 {
-#endif
+#endif // __cplusplus
 
 //Debugger defines
 #define MAX_LABEL_SIZE 256
@@ -157,11 +194,14 @@ extern "C"
 #define MAX_WATCH_NAME_SIZE 256
 #define MAX_STRING_SIZE 512
 #define MAX_ERROR_SIZE 512
-#define RIGHTS_STRING_SIZE (sizeof("ERWCG") + 1)
+#define RIGHTS_STRING_SIZE (sizeof("ERWCG"))
 #define MAX_SECTION_SIZE 10
 #define MAX_COMMAND_LINE_SIZE 256
 #define MAX_MNEMONIC_SIZE 64
+
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 0x1000
+#endif // PAGE_SIZE
 
 //Debugger enums
 typedef enum
@@ -320,6 +360,11 @@ typedef enum
     DBG_MENU_PREPARE,               // param1=int hMenu,                 param2=unused
     DBG_GET_SYMBOL_INFO,            // param1=void* symbol,              param2=SYMBOLINFO* info
     DBG_GET_DEBUG_ENGINE,           // param1=unused,                    param2-unused
+    DBG_GET_SYMBOL_INFO_AT,         // param1=duint addr,                param2=SYMBOLINFO* info
+    DBG_XREF_ADD_MULTI,             // param1=const XREF_EDGE* edges,    param2=duint count
+    DBG_TYPE_VISIT,                 // param1=TYPEVISITDATA* data,       param2=unused
+    DBG_UPDATE_GUI,                 // param1=disasm_addr,               param2=bool stack
+    DBG_IS_TESTING,                 // param1=unused,                    param2=unused
 } DBGMSG;
 
 typedef enum
@@ -424,7 +469,8 @@ typedef enum
     size_dword = 4,
     size_qword = 8,
     size_xmmword = 16,
-    size_ymmword = 32
+    size_ymmword = 32,
+    size_zmmword = 64
 } MEMORY_SIZE;
 
 typedef enum
@@ -440,7 +486,7 @@ typedef enum
     enc_mmword,   //8 bytes
     enc_xmmword,  //16 bytes
     enc_ymmword,  //32 bytes
-    enc_zmmword,  //64 bytes avx512 not supported
+    enc_zmmword,  //64 bytes
     enc_real4,    //4 byte float
     enc_real8,    //8 byte double
     enc_real10,   //10 byte decimal
@@ -514,6 +560,11 @@ typedef enum
     sym_symbol
 } SYMBOLTYPE;
 
+#define SYMBOL_MASK_IMPORT (1u << sym_import)
+#define SYMBOL_MASK_EXPORT (1u << sym_export)
+#define SYMBOL_MASK_SYMBOL (1u << sym_symbol)
+#define SYMBOL_MASK_ALL (SYMBOL_MASK_IMPORT | SYMBOL_MASK_EXPORT | SYMBOL_MASK_SYMBOL)
+
 typedef enum
 {
     mod_user,
@@ -528,11 +579,23 @@ typedef enum
 } DEBUG_ENGINE;
 
 //Debugger typedefs
+struct _TYPEDESCRIPTOR;
 typedef MEMORY_SIZE VALUE_SIZE;
 
 typedef struct DBGFUNCTIONS_ DBGFUNCTIONS;
 
+struct SYMBOLPTR_;  // Forward declaration
+
+// Callback declaration:
+// bool cbSymbolEnum(const SYMBOLPTR* symbol, void* user);
+// To get the data from the opaque pointer:
+// SYMBOLINFO info;
+// DbgGetSymbolInfo(symbol, &info);
+// The SYMBOLPTR* becomes invalid when the module is unloaded
+// DO NOT STORE unless you are absolutely certain you handle it correctly
 typedef bool (*CBSYMBOLENUM)(const struct SYMBOLPTR_* symbol, void* user);
+
+typedef bool (*TYPETOSTRING)(const struct _TYPEDESCRIPTOR* type, char* dest, size_t* destCount); //don't change destCount for final failure
 
 //Debugger structs
 typedef struct
@@ -621,10 +684,39 @@ typedef struct SYMBOLINFO_
     char* decoratedSymbol;
     char* undecoratedSymbol;
     SYMBOLTYPE type;
+
+    // If true: Use BridgeFree(decoratedSymbol) to deallocate
+    // Else: The decoratedSymbol pointer is valid until the module unloads
     bool freeDecorated;
+
+    // If true: Use BridgeFree(undecoratedSymbol) to deallcoate
+    // Else: The undecoratedSymbol pointer is valid until the module unloads
     bool freeUndecorated;
+
+    // The entry point pseudo-export has ordinal == 0 (invalid ordinal value)
     DWORD ordinal;
 } SYMBOLINFO;
+
+#ifdef __cplusplus
+struct SYMBOLINFOCPP : SYMBOLINFO
+{
+    SYMBOLINFOCPP(const SYMBOLINFOCPP &) = delete;
+    SYMBOLINFOCPP(SYMBOLINFOCPP &&) = delete;
+
+    SYMBOLINFOCPP() : SYMBOLINFO{}
+    {
+    }
+
+    ~SYMBOLINFOCPP()
+    {
+        if(freeDecorated)
+            BridgeFree(decoratedSymbol);
+        if(freeUndecorated)
+            BridgeFree(undecoratedSymbol);
+    }
+};
+static_assert(sizeof(SYMBOLINFOCPP) == sizeof(SYMBOLINFO), "");
+#endif // __cplusplus
 
 typedef struct
 {
@@ -637,6 +729,9 @@ typedef struct
     duint base;
     CBSYMBOLENUM cbSymbolEnum;
     void* user;
+    duint start;
+    duint end;
+    unsigned int symbolMask;
 } SYMBOLCBINFO;
 
 typedef struct
@@ -722,6 +817,12 @@ typedef struct
 
 typedef struct
 {
+    YMMREGISTER Low; //AVX part
+    YMMREGISTER High; //AVX-512 part
+} ZMMREGISTER;
+
+typedef struct
+{
     BYTE    data[10];
     int     st_value;
     int     tag;
@@ -787,6 +888,52 @@ typedef struct
 
 typedef struct
 {
+    ULONG_PTR cax;
+    ULONG_PTR ccx;
+    ULONG_PTR cdx;
+    ULONG_PTR cbx;
+    ULONG_PTR csp;
+    ULONG_PTR cbp;
+    ULONG_PTR csi;
+    ULONG_PTR cdi;
+#ifdef _WIN64
+    ULONG_PTR r8;
+    ULONG_PTR r9;
+    ULONG_PTR r10;
+    ULONG_PTR r11;
+    ULONG_PTR r12;
+    ULONG_PTR r13;
+    ULONG_PTR r14;
+    ULONG_PTR r15;
+#endif //_WIN64
+    ULONG_PTR cip;
+    ULONG_PTR eflags;
+    ULONG_PTR dr0;
+    ULONG_PTR dr1;
+    ULONG_PTR dr2;
+    ULONG_PTR dr3;
+    ULONG_PTR dr6;
+    ULONG_PTR dr7;
+    // To save space, aliased SSE and AVX states are shared with AVX-512 states instead. If the CPU does not support AVX-512, the unused part will be ignored.
+#ifdef _WIN64
+    ZMMREGISTER ZmmRegisters[32];
+#else // x86
+    ZMMREGISTER ZmmRegisters[8];
+#endif
+    ULONGLONG Opmask[8];
+    BYTE RegisterArea[80];
+    DWORD MxCsr;
+    X87FPU x87fpu;
+    unsigned short gs;
+    unsigned short fs;
+    unsigned short es;
+    unsigned short ds;
+    unsigned short cs;
+    unsigned short ss;
+} REGISTERCONTEXT_AVX512;
+
+typedef struct
+{
     DWORD code;
     char name[128];
 } LASTERROR;
@@ -809,6 +956,14 @@ typedef struct
     LASTERROR lastError;
     LASTSTATUS lastStatus;
 } REGDUMP;
+
+typedef struct
+{
+    REGISTERCONTEXT_AVX512 regcontext;
+    // To save space, original aliased fields (flags, x87FPURegisters, mmx, MxCsrFields, x87StatusWordFields, x87ControlWordFields) are removed, and can be found in regcontext.
+    DWORD lastError;
+    DWORD lastStatus;
+} REGDUMP_AVX512;
 
 typedef struct
 {
@@ -924,14 +1079,39 @@ typedef struct
     XREF_RECORD* references;
 } XREF_INFO;
 
+typedef struct
+{
+    duint address;
+    duint from;
+} XREF_EDGE;
+
 typedef struct SYMBOLPTR_
 {
     duint modbase;
     const void* symbol;
 } SYMBOLPTR;
 
+#define TYPEDESCRIPTOR_MAGIC 0x1337
+
+typedef struct _TYPEDESCRIPTOR
+{
+    bool expanded; //is the type node expanded?
+    bool reverse; //big endian?
+    uint16_t magic; // compatiblity (set to TYPEDESCRIPTOR_MAGIC for the new version)
+    const char* name; //type name (int b)
+    duint addr; //virtual address
+    duint offset; //offset to addr for the actual location in bytes
+    int id; //type id
+    int sizeBits; //sizeof(type) in bits
+    TYPETOSTRING callback; //convert to string
+    void* userdata; //user data
+    duint bitOffset; // bit offset from first bitfield
+    const char* typeName; // undecorated typename
+} TYPEDESCRIPTOR;
+
 //Debugger functions
 BRIDGE_IMPEXP const char* DbgInit();
+BRIDGE_IMPEXP const char* DbgInitBlocking();
 BRIDGE_IMPEXP void DbgExit();
 BRIDGE_IMPEXP bool DbgMemRead(duint va, void* dest, duint size);
 BRIDGE_IMPEXP bool DbgMemWrite(duint va, const void* src, duint size);
@@ -974,8 +1154,10 @@ BRIDGE_IMPEXP void DbgClearBookmarkRange(duint start, duint end);
 BRIDGE_IMPEXP bool DbgGetModuleAt(duint addr, char* text);
 BRIDGE_IMPEXP BPXTYPE DbgGetBpxTypeAt(duint addr);
 BRIDGE_IMPEXP duint DbgValFromString(const char* string);
-BRIDGE_IMPEXP bool DbgGetRegDumpEx(REGDUMP* regdump, size_t size);
-BRIDGE_IMPEXP bool DbgValToString(const char* string, duint value);
+BRIDGE_IMPEXP bool DbgGetRegDumpEx(REGDUMP_AVX512* regdump, size_t size);
+BRIDGE_IMPEXP bool DbgValSetBuffer(const char* string, const void* data, size_t size);
+// Previously called DbgValToString.
+BRIDGE_IMPEXP bool DbgValSetScalar(const char* string, duint value);
 BRIDGE_IMPEXP bool DbgMemIsValidReadPtr(duint addr);
 BRIDGE_IMPEXP int DbgGetBpList(BPXTYPE type, BPMAP* list);
 BRIDGE_IMPEXP FUNCTYPE DbgGetFunctionTypeAt(duint addr);
@@ -992,14 +1174,16 @@ BRIDGE_IMPEXP void DbgScriptAbort();
 BRIDGE_IMPEXP SCRIPTLINETYPE DbgScriptGetLineType(int line);
 BRIDGE_IMPEXP void DbgScriptSetIp(int line);
 BRIDGE_IMPEXP bool DbgScriptGetBranchInfo(int line, SCRIPTBRANCH* info);
-BRIDGE_IMPEXP void DbgSymbolEnum(duint base, CBSYMBOLENUM cbSymbolEnum, void* user);
-BRIDGE_IMPEXP void DbgSymbolEnumFromCache(duint base, CBSYMBOLENUM cbSymbolEnum, void* user);
+BRIDGE_IMPEXP bool DbgSymbolEnum(duint base, CBSYMBOLENUM cbSymbolEnum, void* user);
+BRIDGE_IMPEXP bool DbgSymbolEnumFromCache(duint base, CBSYMBOLENUM cbSymbolEnum, void* user);
+BRIDGE_IMPEXP bool DbgSymbolEnumRange(duint start, duint end, unsigned int symbolMask, CBSYMBOLENUM cbSymbolEnum, void* user);
 BRIDGE_IMPEXP bool DbgAssembleAt(duint addr, const char* instruction);
 BRIDGE_IMPEXP duint DbgModBaseFromName(const char* name);
 BRIDGE_IMPEXP void DbgDisasmAt(duint addr, DISASM_INSTR* instr);
 BRIDGE_IMPEXP bool DbgStackCommentGet(duint addr, STACK_COMMENT* comment);
 BRIDGE_IMPEXP void DbgGetThreadList(THREADLIST* list);
 BRIDGE_IMPEXP void DbgSettingsUpdated();
+BRIDGE_IMPEXP bool DbgIsTesting();
 BRIDGE_IMPEXP void DbgDisasmFastAt(duint addr, BASIC_INSTRUCTION_INFO* basicinfo);
 BRIDGE_IMPEXP void DbgMenuEntryClicked(int hEntry);
 BRIDGE_IMPEXP bool DbgFunctionGet(duint addr, duint* start, duint* end);
@@ -1055,8 +1239,10 @@ BRIDGE_IMPEXP bool DbgAnalyzeFunction(duint entry, BridgeCFGraphList* graph);
 BRIDGE_IMPEXP duint DbgEval(const char* expression, bool* DEFAULT_PARAM(success, nullptr));
 BRIDGE_IMPEXP void DbgGetSymbolInfo(const SYMBOLPTR* symbolptr, SYMBOLINFO* info);
 BRIDGE_IMPEXP DEBUG_ENGINE DbgGetDebugEngine();
+BRIDGE_IMPEXP bool DbgGetSymbolInfoAt(duint addr, SYMBOLINFO* info);
+BRIDGE_IMPEXP duint DbgXrefAddMulti(const XREF_EDGE* edges, duint count);
+BRIDGE_IMPEXP void DbgUpdateGui(duint disasm_addr, bool stack);
 
-//Gui defines
 typedef enum
 {
     GUI_PLUGIN_MENU,
@@ -1078,135 +1264,178 @@ typedef enum
     GUI_GRAPH,
     GUI_MEMMAP,
     GUI_SYMMOD,
+    GUI_THREADS,
 } GUISELECTIONTYPE;
 
+typedef void* (*TYPEVISITFUNC)(void* parent, const TYPEDESCRIPTOR* type, void* userdata);
+
+typedef struct _TYPEVISITDATA
+{
+    const char* typeName;
+    const char* declName; // optional
+    void* root;
+    duint addr;
+    int maxPtrDepth; // negative for default
+    int maxExpandDepth; // negative for default
+    int maxExpandArray; // negative for default
+    bool createLabels; // create (temporary) labels for every member
+    TYPEVISITFUNC callback;
+    void* userdata;
+} TYPEVISITDATA;
+
+BRIDGE_IMPEXP bool DbgTypeVisit(const TYPEVISITDATA* data);
+
+//Gui defines
 #define GUI_MAX_LINE_SIZE 65536
 #define GUI_MAX_DISASSEMBLY_SIZE 2048
 
-//Gui enums
+//Gui enums (NOTE: only add new messages to the end of the list)
+// clang-format off
+#define GUIMSG_LIST(msg) \
+    msg(GUI_DISASSEMBLE_AT, (duint)va, (duint)cip) \
+    msg(GUI_SET_DEBUG_STATE, (DBGSTATE)state, unused) \
+    msg(GUI_ADD_MSG_TO_LOG, (const char*)msg, unused) \
+    msg(GUI_CLEAR_LOG, unused, unused) \
+    msg(GUI_UPDATE_REGISTER_VIEW, unused, unused) \
+    msg(GUI_UPDATE_DISASSEMBLY_VIEW, unused, unused) \
+    msg(GUI_UPDATE_BREAKPOINTS_VIEW, unused, unused) \
+    msg(GUI_UPDATE_WINDOW_TITLE, (const char*)file, unused) \
+    msg(GUI_GET_WINDOW_HANDLE, unused, unused) \
+    msg(GUI_DUMP_AT, (duint)va, unused) \
+    msg(GUI_SCRIPT_ADD, int count, const char** lines) \
+    msg(GUI_SCRIPT_CLEAR, unused, unused) \
+    msg(GUI_SCRIPT_SETIP, int line, unused) \
+    msg(GUI_SCRIPT_ERROR, int line, const char* message) \
+    msg(GUI_SCRIPT_SETTITLE, const char* title, unused) \
+    msg(GUI_SCRIPT_SETINFOLINE, int line, const char* info) \
+    msg(GUI_SCRIPT_MESSAGE, const char* message, unused) \
+    msg(GUI_SCRIPT_MSGYN, const char* message, unused) \
+    msg(GUI_SYMBOL_LOG_ADD, (const char*)msg, unused) \
+    msg(GUI_SYMBOL_LOG_CLEAR, unused, unused) \
+    msg(GUI_SYMBOL_SET_PROGRESS, int percent, unused) \
+    msg(GUI_SYMBOL_UPDATE_MODULE_LIST, int count, SYMBOLMODULEINFO* modules) \
+    msg(GUI_REF_ADDCOLUMN, int width, (const char*)title) \
+    msg(GUI_REF_SETROWCOUNT, int rows, unused) \
+    msg(GUI_REF_GETROWCOUNT, unused, unused) \
+    msg(GUI_REF_DELETEALLCOLUMNS, unused, unused) \
+    msg(GUI_REF_SETCELLCONTENT, (CELLINFO*)info, unused) \
+    msg(GUI_REF_GETCELLCONTENT, int row, int col) \
+    msg(GUI_REF_RELOADDATA, unused, unused) \
+    msg(GUI_REF_SETSINGLESELECTION, int index, bool scroll) \
+    msg(GUI_REF_SETPROGRESS, int progress, unused) \
+    msg(GUI_REF_SETCURRENTTASKPROGRESS, int progress, const char* taskTitle) \
+    msg(GUI_REF_SETSEARCHSTARTCOL, int col, unused) \
+    msg(GUI_STACK_DUMP_AT, duint addr, duint csp) \
+    msg(GUI_UPDATE_DUMP_VIEW, unused, unused) \
+    msg(GUI_UPDATE_THREAD_VIEW, unused, unused) \
+    msg(GUI_ADD_RECENT_FILE, (const char*)file, unused) \
+    msg(GUI_SET_LAST_EXCEPTION, unsigned int code, unused) \
+    msg(GUI_GET_DISASSEMBLY, duint addr, char* text) \
+    msg(GUI_MENU_ADD, int hMenu, const char* title) \
+    msg(GUI_MENU_ADD_ENTRY, int hMenu, const char* title) \
+    msg(GUI_MENU_ADD_SEPARATOR, int hMenu, unused) \
+    msg(GUI_MENU_CLEAR, int hMenu, unused) \
+    msg(GUI_SELECTION_GET, GUISELECTIONTYPE, SELECTIONDATA* selection) \
+    msg(GUI_SELECTION_SET, GUISELECTIONTYPE, const SELECTIONDATA* selection) \
+    msg(GUI_GETLINE_WINDOW, const char* title, char* text) \
+    msg(GUI_AUTOCOMPLETE_ADDCMD, const char* cmd, ununsed) \
+    msg(GUI_AUTOCOMPLETE_DELCMD, const char* cmd, ununsed) \
+    msg(GUI_AUTOCOMPLETE_CLEARALL, unused, unused) \
+    msg(GUI_SCRIPT_ENABLEHIGHLIGHTING, bool enable, unused) \
+    msg(GUI_ADD_MSG_TO_STATUSBAR, const char* msg, unused) \
+    msg(GUI_UPDATE_SIDEBAR, unused, unused) \
+    msg(GUI_REPAINT_TABLE_VIEW, unused, unused) \
+    msg(GUI_UPDATE_PATCHES, unused, unused) \
+    msg(GUI_UPDATE_CALLSTACK, unused, unused) \
+    msg(GUI_UPDATE_SEHCHAIN, unused, unused) \
+    msg(GUI_SYMBOL_REFRESH_CURRENT, unused, unused) \
+    msg(GUI_UPDATE_MEMORY_VIEW, unused, unused) \
+    msg(GUI_REF_INITIALIZE, const char* name, unused) \
+    msg(GUI_LOAD_SOURCE_FILE, const char* path, duint addr) \
+    msg(GUI_MENU_SET_ICON, int hMenu, ICONINFO*) \
+    msg(GUI_MENU_SET_ENTRY_ICON, int hEntry, ICONINFO*) \
+    msg(GUI_SHOW_CPU, unused, unused) \
+    msg(GUI_ADD_QWIDGET_TAB, QWidget*, unused) \
+    msg(GUI_SHOW_QWIDGET_TAB, QWidget*, unused) \
+    msg(GUI_CLOSE_QWIDGET_TAB, QWidget*, unused) \
+    msg(GUI_EXECUTE_ON_GUI_THREAD, GUICALLBACKEX cb, void* userdata) \
+    msg(GUI_UPDATE_TIME_WASTED_COUNTER, unused, unused) \
+    msg(GUI_SET_GLOBAL_NOTES, const char* text, unused) \
+    msg(GUI_GET_GLOBAL_NOTES, char** text, unused) \
+    msg(GUI_SET_DEBUGGEE_NOTES, const char* text, unused) \
+    msg(GUI_GET_DEBUGGEE_NOTES, char** text, unused) \
+    msg(GUI_DUMP_AT_N, int index, duint va) \
+    msg(GUI_DISPLAY_WARNING, const char *text, unused) \
+    msg(GUI_REGISTER_SCRIPT_LANG, SCRIPTTYPEINFO* info, unused) \
+    msg(GUI_UNREGISTER_SCRIPT_LANG, int id, unused) \
+    msg(GUI_UPDATE_ARGUMENT_VIEW, unused, unused) \
+    msg(GUI_FOCUS_VIEW, int hWindow, unused) \
+    msg(GUI_UPDATE_WATCH_VIEW, unused, unused) \
+    msg(GUI_LOAD_GRAPH, BridgeCFGraphList*, unused) \
+    msg(GUI_GRAPH_AT, duint addr, unused) \
+    msg(GUI_UPDATE_GRAPH_VIEW, unused, unused) \
+    msg(GUI_SET_LOG_ENABLED, bool isEnabled, unused) \
+    msg(GUI_ADD_FAVOURITE_TOOL, const char* name, const char* description) \
+    msg(GUI_ADD_FAVOURITE_COMMAND, const char* command, const char* shortcut) \
+    msg(GUI_SET_FAVOURITE_TOOL_SHORTCUT, const char* name, const char* shortcut) \
+    msg(GUI_FOLD_DISASSEMBLY, duint startAddress, duint length) \
+    msg(GUI_SELECT_IN_MEMORY_MAP, duint addr, unused) \
+    msg(GUI_GET_ACTIVE_VIEW, ACTIVEVIEW*, unused) \
+    msg(GUI_MENU_SET_ENTRY_CHECKED, int hEntry, bool checked) \
+    msg(GUI_ADD_INFO_LINE, const char* infoline, unused) \
+    msg(GUI_PROCESS_EVENTS, unused, unused) \
+    msg(GUI_TYPE_ADDNODE, void* parent, TYPEDESCRIPTOR* type) \
+    msg(GUI_TYPE_CLEAR, unused, unused) \
+    msg(GUI_UPDATE_TYPE_WIDGET, unused, unused) \
+    msg(GUI_CLOSE_APPLICATION, unused, unused) \
+    msg(GUI_MENU_SET_VISIBLE, int hMenu, bool visible) \
+    msg(GUI_MENU_SET_ENTRY_VISIBLE, int hEntry, bool visible) \
+    msg(GUI_MENU_SET_NAME, int hMenu, const char* name) \
+    msg(GUI_MENU_SET_ENTRY_NAME, int hEntry, const char* name) \
+    msg(GUI_FLUSH_LOG, unused, unused) \
+    msg(GUI_MENU_SET_ENTRY_HOTKEY, int hEntry, const char* hack) \
+    msg(GUI_REF_SEARCH_GETROWCOUNT, unused, unused) \
+    msg(GUI_REF_SEARCH_GETCELLCONTENT, int row, int col) \
+    msg(GUI_MENU_REMOVE, int hEntryMenu, unused) \
+    msg(GUI_REF_ADDCOMMAND, const char* title, const char* command) \
+    msg(GUI_OPEN_TRACE_FILE, const char* file name, unused) \
+    msg(GUI_UPDATE_TRACE_BROWSER, unused, unused) \
+    msg(GUI_INVALIDATE_SYMBOL_SOURCE, duint base, unused) \
+    msg(GUI_GET_CURRENT_GRAPH, BridgeCFGraphList*, unused) \
+    msg(GUI_SHOW_REF, unused, unused) \
+    msg(GUI_SELECT_IN_SYMBOLS_TAB, duint addr, unused) \
+    msg(GUI_GOTO_TRACE, duint index, unused) \
+    msg(GUI_SHOW_TRACE, unused, unused) \
+    msg(GUI_GET_MAIN_THREAD_ID, unused, unused) \
+    msg(GUI_ADD_MSG_TO_LOG_HTML, (const char*)msg, unused) \
+    msg(GUI_IS_LOG_ENABLED, unused, unused) \
+    msg(GUI_IS_DEBUGGER_FOCUSED_UNUSED, unused, unused) \
+    msg(GUI_SAVE_LOG, const char* file name, unused) \
+    msg(GUI_REDIRECT_LOG, const char* file name, unused) \
+    msg(GUI_STOP_REDIRECT_LOG, unused, unused) \
+    msg(GUI_SHOW_THREADS, unused, unused) \
+    msg(GUI_SHOW_STRUCT, unused, unused) \
+    msg(GUI_TYPE_VISIT, const char* typeName, duint addr) \
+    msg(GUI_TYPE_LIST_UPDATED, unused, unused) \
+
+// clang-format on
+
+// *INDENT-OFF*
+#define GUIMSG_ENUM(msg, param1, param2) msg,
+
 typedef enum
 {
-    GUI_DISASSEMBLE_AT,             // param1=(duint)va,            param2=(duint)cip
-    GUI_SET_DEBUG_STATE,            // param1=(DBGSTATE)state,      param2=unused
-    GUI_ADD_MSG_TO_LOG,             // param1=(const char*)msg,     param2=unused
-    GUI_CLEAR_LOG,                  // param1=unused,               param2=unused
-    GUI_UPDATE_REGISTER_VIEW,       // param1=unused,               param2=unused
-    GUI_UPDATE_DISASSEMBLY_VIEW,    // param1=unused,               param2=unused
-    GUI_UPDATE_BREAKPOINTS_VIEW,    // param1=unused,               param2=unused
-    GUI_UPDATE_WINDOW_TITLE,        // param1=(const char*)file,    param2=unused
-    GUI_GET_WINDOW_HANDLE,          // param1=unused,               param2=unused
-    GUI_DUMP_AT,                    // param1=(duint)va             param2=unused
-    GUI_SCRIPT_ADD,                 // param1=int count,            param2=const char** lines
-    GUI_SCRIPT_CLEAR,               // param1=unused,               param2=unused
-    GUI_SCRIPT_SETIP,               // param1=int line,             param2=unused
-    GUI_SCRIPT_ERROR,               // param1=int line,             param2=const char* message
-    GUI_SCRIPT_SETTITLE,            // param1=const char* title,    param2=unused
-    GUI_SCRIPT_SETINFOLINE,         // param1=int line,             param2=const char* info
-    GUI_SCRIPT_MESSAGE,             // param1=const char* message,  param2=unused
-    GUI_SCRIPT_MSGYN,               // param1=const char* message,  param2=unused
-    GUI_SYMBOL_LOG_ADD,             // param1(const char*)msg,      param2=unused
-    GUI_SYMBOL_LOG_CLEAR,           // param1=unused,               param2=unused
-    GUI_SYMBOL_SET_PROGRESS,        // param1=int percent           param2=unused
-    GUI_SYMBOL_UPDATE_MODULE_LIST,  // param1=int count,            param2=SYMBOLMODULEINFO* modules
-    GUI_REF_ADDCOLUMN,              // param1=int width,            param2=(const char*)title
-    GUI_REF_SETROWCOUNT,            // param1=int rows,             param2=unused
-    GUI_REF_GETROWCOUNT,            // param1=unused,               param2=unused
-    GUI_REF_DELETEALLCOLUMNS,       // param1=unused,               param2=unused
-    GUI_REF_SETCELLCONTENT,         // param1=(CELLINFO*)info,      param2=unused
-    GUI_REF_GETCELLCONTENT,         // param1=int row,              param2=int col
-    GUI_REF_RELOADDATA,             // param1=unused,               param2=unused
-    GUI_REF_SETSINGLESELECTION,     // param1=int index,            param2=bool scroll
-    GUI_REF_SETPROGRESS,            // param1=int progress,         param2=unused
-    GUI_REF_SETCURRENTTASKPROGRESS, // param1=int progress,         param2=const char* taskTitle
-    GUI_REF_SETSEARCHSTARTCOL,      // param1=int col               param2=unused
-    GUI_STACK_DUMP_AT,              // param1=duint addr,           param2=duint csp
-    GUI_UPDATE_DUMP_VIEW,           // param1=unused,               param2=unused
-    GUI_UPDATE_THREAD_VIEW,         // param1=unused,               param2=unused
-    GUI_ADD_RECENT_FILE,            // param1=(const char*)file,    param2=unused
-    GUI_SET_LAST_EXCEPTION,         // param1=unsigned int code,    param2=unused
-    GUI_GET_DISASSEMBLY,            // param1=duint addr,           param2=char* text
-    GUI_MENU_ADD,                   // param1=int hMenu,            param2=const char* title
-    GUI_MENU_ADD_ENTRY,             // param1=int hMenu,            param2=const char* title
-    GUI_MENU_ADD_SEPARATOR,         // param1=int hMenu,            param2=unused
-    GUI_MENU_CLEAR,                 // param1=int hMenu,            param2=unused
-    GUI_SELECTION_GET,              // param1=GUISELECTIONTYPE,     param2=SELECTIONDATA* selection
-    GUI_SELECTION_SET,              // param1=GUISELECTIONTYPE,     param2=const SELECTIONDATA* selection
-    GUI_GETLINE_WINDOW,             // param1=const char* title,    param2=char* text
-    GUI_AUTOCOMPLETE_ADDCMD,        // param1=const char* cmd,      param2=ununsed
-    GUI_AUTOCOMPLETE_DELCMD,        // param1=const char* cmd,      param2=ununsed
-    GUI_AUTOCOMPLETE_CLEARALL,      // param1=unused,               param2=unused
-    GUI_SCRIPT_ENABLEHIGHLIGHTING,  // param1=bool enable,          param2=unused
-    GUI_ADD_MSG_TO_STATUSBAR,       // param1=const char* msg,      param2=unused
-    GUI_UPDATE_SIDEBAR,             // param1=unused,               param2=unused
-    GUI_REPAINT_TABLE_VIEW,         // param1=unused,               param2=unused
-    GUI_UPDATE_PATCHES,             // param1=unused,               param2=unused
-    GUI_UPDATE_CALLSTACK,           // param1=unused,               param2=unused
-    GUI_UPDATE_SEHCHAIN,            // param1=unused,               param2=unused
-    GUI_SYMBOL_REFRESH_CURRENT,     // param1=unused,               param2=unused
-    GUI_UPDATE_MEMORY_VIEW,         // param1=unused,               param2=unused
-    GUI_REF_INITIALIZE,             // param1=const char* name,     param2=unused
-    GUI_LOAD_SOURCE_FILE,           // param1=const char* path,     param2=duint addr
-    GUI_MENU_SET_ICON,              // param1=int hMenu,            param2=ICONINFO*
-    GUI_MENU_SET_ENTRY_ICON,        // param1=int hEntry,           param2=ICONINFO*
-    GUI_SHOW_CPU,                   // param1=unused,               param2=unused
-    GUI_ADD_QWIDGET_TAB,            // param1=QWidget*,             param2=unused
-    GUI_SHOW_QWIDGET_TAB,           // param1=QWidget*,             param2=unused
-    GUI_CLOSE_QWIDGET_TAB,          // param1=QWidget*,             param2=unused
-    GUI_EXECUTE_ON_GUI_THREAD,      // param1=GUICALLBACKEX cb,     param2=void* userdata
-    GUI_UPDATE_TIME_WASTED_COUNTER, // param1=unused,               param2=unused
-    GUI_SET_GLOBAL_NOTES,           // param1=const char* text,     param2=unused
-    GUI_GET_GLOBAL_NOTES,           // param1=char** text,          param2=unused
-    GUI_SET_DEBUGGEE_NOTES,         // param1=const char* text,     param2=unused
-    GUI_GET_DEBUGGEE_NOTES,         // param1=char** text,          param2=unused
-    GUI_DUMP_AT_N,                  // param1=int index,            param2=duint va
-    GUI_DISPLAY_WARNING,            // param1=const char *text,     param2=unused
-    GUI_REGISTER_SCRIPT_LANG,       // param1=SCRIPTTYPEINFO* info, param2=unused
-    GUI_UNREGISTER_SCRIPT_LANG,     // param1=int id,               param2=unused
-    GUI_UPDATE_ARGUMENT_VIEW,       // param1=unused,               param2=unused
-    GUI_FOCUS_VIEW,                 // param1=int hWindow,          param2=unused
-    GUI_UPDATE_WATCH_VIEW,          // param1=unused,               param2=unused
-    GUI_LOAD_GRAPH,                 // param1=BridgeCFGraphList*    param2=unused
-    GUI_GRAPH_AT,                   // param1=duint addr            param2=unused
-    GUI_UPDATE_GRAPH_VIEW,          // param1=unused,               param2=unused
-    GUI_SET_LOG_ENABLED,            // param1=bool isEnabled        param2=unused
-    GUI_ADD_FAVOURITE_TOOL,         // param1=const char* name      param2=const char* description
-    GUI_ADD_FAVOURITE_COMMAND,      // param1=const char* command   param2=const char* shortcut
-    GUI_SET_FAVOURITE_TOOL_SHORTCUT,// param1=const char* name      param2=const char* shortcut
-    GUI_FOLD_DISASSEMBLY,           // param1=duint startAddress    param2=duint length
-    GUI_SELECT_IN_MEMORY_MAP,       // param1=duint addr,           param2=unused
-    GUI_GET_ACTIVE_VIEW,            // param1=ACTIVEVIEW*,          param2=unused
-    GUI_MENU_SET_ENTRY_CHECKED,     // param1=int hEntry,           param2=bool checked
-    GUI_ADD_INFO_LINE,              // param1=const char* infoline, param2=unused
-    GUI_PROCESS_EVENTS,             // param1=unused,               param2=unused
-    GUI_TYPE_ADDNODE,               // param1=void* parent,         param2=TYPEDESCRIPTOR* type
-    GUI_TYPE_CLEAR,                 // param1=unused,               param2=unused
-    GUI_UPDATE_TYPE_WIDGET,         // param1=unused,               param2=unused
-    GUI_CLOSE_APPLICATION,          // param1=unused,               param2=unused
-    GUI_MENU_SET_VISIBLE,           // param1=int hMenu,            param2=bool visible
-    GUI_MENU_SET_ENTRY_VISIBLE,     // param1=int hEntry,           param2=bool visible
-    GUI_MENU_SET_NAME,              // param1=int hMenu,            param2=const char* name
-    GUI_MENU_SET_ENTRY_NAME,        // param1=int hEntry,           param2=const char* name
-    GUI_FLUSH_LOG,                  // param1=unused,               param2=unused
-    GUI_MENU_SET_ENTRY_HOTKEY,      // param1=int hEntry,           param2=const char* hack
-    GUI_REF_SEARCH_GETROWCOUNT,     // param1=unused,               param2=unused
-    GUI_REF_SEARCH_GETCELLCONTENT,  // param1=int row,              param2=int col
-    GUI_MENU_REMOVE,                // param1=int hEntryMenu,       param2=unused
-    GUI_REF_ADDCOMMAND,             // param1=const char* title,    param2=const char* command
-    GUI_OPEN_TRACE_FILE,            // param1=const char* file name,param2=unused
-    GUI_UPDATE_TRACE_BROWSER,       // param1=unused,               param2=unused
-    GUI_INVALIDATE_SYMBOL_SOURCE,   // param1=duint base,           param2=unused
-    GUI_GET_CURRENT_GRAPH,          // param1=BridgeCFGraphList*,   param2=unused
-    GUI_SHOW_REF,                   // param1=unused,               param2=unused
+    GUIMSG_LIST(GUIMSG_ENUM)
 } GUIMSG;
 
-//GUI Typedefs
-struct _TYPEDESCRIPTOR;
+#undef GUIMSG_ENUM
+// *INDENT-ON*
 
+//GUI Typedefs
 typedef void (*GUICALLBACK)();
 typedef void (*GUICALLBACKEX)(void*);
 typedef bool (*GUISCRIPTEXECUTE)(const char* text);
 typedef void (*GUISCRIPTCOMPLETER)(const char* text, char** entries, int* entryCount);
-typedef bool (*TYPETOSTRING)(const struct _TYPEDESCRIPTOR* type, char* dest, size_t* destCount); //don't change destCount for final failure
 
 //GUI structures
 typedef struct
@@ -1244,19 +1473,6 @@ typedef struct
     char className[MAX_STRING_SIZE];
 } ACTIVEVIEW;
 
-typedef struct _TYPEDESCRIPTOR
-{
-    bool expanded; //is the type node expanded?
-    bool reverse; //big endian?
-    const char* name; //type name (int b)
-    duint addr; //virtual address
-    duint offset; //offset to addr for the actual location
-    int id; //type id
-    int size; //sizeof(type)
-    TYPETOSTRING callback; //convert to string
-    void* userdata; //user data
-} TYPEDESCRIPTOR;
-
 //GUI functions
 //code page is utf8
 BRIDGE_IMPEXP const char* GuiTranslateText(const char* Source);
@@ -1264,7 +1480,11 @@ BRIDGE_IMPEXP void GuiDisasmAt(duint addr, duint cip);
 BRIDGE_IMPEXP void GuiSetDebugState(DBGSTATE state);
 BRIDGE_IMPEXP void GuiSetDebugStateFast(DBGSTATE state);
 BRIDGE_IMPEXP void GuiAddLogMessage(const char* msg);
+BRIDGE_IMPEXP void GuiAddLogMessageHtml(const char* msg);
 BRIDGE_IMPEXP void GuiLogClear();
+BRIDGE_IMPEXP void GuiLogSave(const char* filename);
+BRIDGE_IMPEXP void GuiLogRedirect(const char* filename);
+BRIDGE_IMPEXP void GuiLogRedirectStop();
 BRIDGE_IMPEXP void GuiUpdateAllViews();
 BRIDGE_IMPEXP void GuiUpdateRegisterView();
 BRIDGE_IMPEXP void GuiUpdateDisassemblyView();
@@ -1335,6 +1555,7 @@ BRIDGE_IMPEXP void GuiMenuSetName(int hMenu, const char* name);
 BRIDGE_IMPEXP void GuiMenuSetEntryName(int hEntry, const char* name);
 BRIDGE_IMPEXP void GuiMenuSetEntryHotkey(int hEntry, const char* hack);
 BRIDGE_IMPEXP void GuiShowCpu();
+BRIDGE_IMPEXP void GuiShowThreads();
 BRIDGE_IMPEXP void GuiAddQWidgetTab(void* qWidget);
 BRIDGE_IMPEXP void GuiShowQWidgetTab(void* qWidget);
 BRIDGE_IMPEXP void GuiCloseQWidgetTab(void* qWidget);
@@ -1354,10 +1575,11 @@ BRIDGE_IMPEXP bool GuiIsUpdateDisabled();
 BRIDGE_IMPEXP void GuiUpdateEnable(bool updateNow);
 BRIDGE_IMPEXP void GuiUpdateDisable();
 BRIDGE_IMPEXP bool GuiLoadGraph(BridgeCFGraphList* graph, duint addr);
-BRIDGE_IMPEXP duint GuiGraphAt(duint addr);
+BRIDGE_IMPEXP duint GuiGraphAt(duint addr); // Navigate to addr in the cached graph, returns graph entry point or 0 if addr is not in the cached graph
 BRIDGE_IMPEXP void GuiUpdateGraphView();
 BRIDGE_IMPEXP void GuiDisableLog();
 BRIDGE_IMPEXP void GuiEnableLog();
+BRIDGE_IMPEXP bool GuiIsLogEnabled();
 BRIDGE_IMPEXP void GuiAddFavouriteTool(const char* name, const char* description);
 BRIDGE_IMPEXP void GuiAddFavouriteCommand(const char* name, const char* shortcut);
 BRIDGE_IMPEXP void GuiSetFavouriteToolShortcut(const char* name, const char* shortcut);
@@ -1368,6 +1590,8 @@ BRIDGE_IMPEXP void GuiAddInfoLine(const char* infoLine);
 BRIDGE_IMPEXP void GuiProcessEvents();
 BRIDGE_IMPEXP void* GuiTypeAddNode(void* parent, const TYPEDESCRIPTOR* type);
 BRIDGE_IMPEXP bool GuiTypeClear();
+BRIDGE_IMPEXP void GuiTypeVisit(const char* typeName, duint addr);
+BRIDGE_IMPEXP void GuiTypeListUpdated();
 BRIDGE_IMPEXP void GuiUpdateTypeWidget();
 BRIDGE_IMPEXP void GuiCloseApplication();
 BRIDGE_IMPEXP void GuiFlushLog();
@@ -1378,10 +1602,66 @@ BRIDGE_IMPEXP void GuiInvalidateSymbolSource(duint base);
 BRIDGE_IMPEXP void GuiExecuteOnGuiThreadEx(GUICALLBACKEX cbGuiThread, void* userdata);
 BRIDGE_IMPEXP void GuiGetCurrentGraph(BridgeCFGraphList* graphList);
 BRIDGE_IMPEXP void GuiShowReferences();
+BRIDGE_IMPEXP void GuiSelectInSymbolsTab(duint addr);
+BRIDGE_IMPEXP void GuiGotoTrace(duint index);
+BRIDGE_IMPEXP void GuiShowTrace();
+BRIDGE_IMPEXP DWORD GuiGetMainThreadId();
+BRIDGE_IMPEXP void GuiShowStructView();
 
 #ifdef __cplusplus
 }
-#endif
+#endif // __cplusplus
+
+// Some useful C++ wrapper classes
+#ifdef __cplusplus
+
+class GuiDisableLogScope
+{
+    bool wasEnabled;
+
+public:
+    GuiDisableLogScope(const GuiDisableLogScope &) = delete;
+
+    GuiDisableLogScope()
+    {
+        wasEnabled = GuiIsLogEnabled();
+        if(wasEnabled)
+            GuiDisableLog();
+    }
+
+    ~GuiDisableLogScope()
+    {
+        if(wasEnabled)
+            GuiEnableLog();
+    }
+};
+
+class GuiDisableUpdateScope
+{
+    bool updateAfter;
+    bool wasEnabled;
+
+public:
+    GuiDisableUpdateScope(const GuiDisableUpdateScope &) = delete;
+
+    explicit GuiDisableUpdateScope(bool updateAfter = true)
+        : updateAfter(updateAfter)
+    {
+        wasEnabled = !GuiIsUpdateDisabled();
+        if(wasEnabled)
+            GuiUpdateDisable();
+    }
+
+    ~GuiDisableUpdateScope()
+    {
+        if(wasEnabled)
+            GuiUpdateEnable(updateAfter);
+    }
+};
+
+class GuiDisableScope : GuiDisableUpdateScope, GuiDisableLogScope { };
+
+#endif // __cplusplus
 
 #pragma pack(pop)
 
